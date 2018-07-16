@@ -67,10 +67,7 @@ namespace LineExtractTest
                 inputData = _InputImage.LockBits(new Rectangle(Point.Empty, _InputImage.Size), System.Drawing.Imaging.ImageLockMode.ReadWrite, _InputImage.PixelFormat);
                 outputdata = outputImage.LockBits(new Rectangle(Point.Empty, _InputImage.Size), System.Drawing.Imaging.ImageLockMode.ReadWrite, _InputImage.PixelFormat);
 
-                unsafe
-                {
-                    byte* inputPtrStart = (byte*)inputData.Scan0;
-                    byte* outputPtrStart = (byte*)outputdata.Scan0;
+                    
 
                     int channelCount = inputData.Stride / inputData.Width;
                     int stride = inputData.Stride;
@@ -79,12 +76,21 @@ namespace LineExtractTest
 
                     int pixelCount = w * h;
 
+                
+
                     /* 何度も計算するため予め輝度を計算しておく */
                     int[] glaydata = new int[pixelCount];
                     Parallel.For(0, pixelCount, i =>
                     {
+                        Span<byte> input;
+                        unsafe
+                        {
+                            input = new Span<byte>(inputData.Scan0.ToPointer(), pixelCount * channelCount);
+                        }
+                        
+                        Span<byte> inputPixel = input.Slice(i * channelCount, channelCount);
                         glaydata[i] = GetBrightness(
-                            ReadPixelDataToVector(inputPtrStart + i * channelCount)
+                            ReadPixelDataToVector(inputPixel)
                         );
                     });
                     
@@ -97,39 +103,44 @@ namespace LineExtractTest
                         Vector<int>[] neighbors = new Vector<int>[9];
                         int[] neighborsBrightness = new int[9];
 
-                        byte* inputPtr = inputPtrStart + i * channelCount;
-                        byte* outputPtr = outputPtrStart + i * channelCount;
 
-                        Vector<int> srcPixel = ReadPixelDataToVector(inputPtr);
+                        Span<byte> input;
+                        Span<byte> output;
 
-                        ReadNeighborsToVectorArray(inputPtr, x, y, w, h, stride, channelCount, ref neighbors);
+                        unsafe {
+                            input = new Span<byte>(inputData.Scan0.ToPointer(), pixelCount * channelCount);
+                            output = new Span<byte>(outputdata.Scan0.ToPointer(), pixelCount * channelCount);
+                        }
+
+                        Span<byte> inputPixel = input.Slice(i*channelCount, channelCount);
+                        Span<byte> ouputPixel = output.Slice(i * channelCount, channelCount);
+
+
+                        Vector<int> srcPixel = ReadPixelDataToVector(inputPixel);
+
+                        ReadNeighborsToVectorArray(input, x, y, w, h, stride, channelCount, ref neighbors);
                         ReadNeighborsToArray(ref glaydata, i, x, y, w, h, ref neighborsBrightness);
 
-
-                        outputPtr[CHANNEL_A] = 0;
-                        outputPtr[CHANNEL_R] = 0;
-                        outputPtr[CHANNEL_G] = 0;
-                        outputPtr[CHANNEL_B] = 0;
+                        ouputPixel.Fill(0);
 
                         int br = GetBrightness(srcPixel);
 
                         if (br < _Threshold)
                         {
-                            outputPtr[CHANNEL_A] = (byte)Math.Min(srcPixel[CHANNEL_A], 255 - br);
+                            ouputPixel[CHANNEL_A] = (byte)Math.Min(srcPixel[CHANNEL_A], 255 - br);
                         }
                         else
                         {
                             int guessedAlpha = GuessAlphaFromNeighbors(srcPixel, neighbors, neighborsBrightness);
                             if (guessedAlpha >= 0)
                             {
-                                outputPtr[CHANNEL_A] = (byte)Math.Min(Math.Min(srcPixel[CHANNEL_A], guessedAlpha), 255);
+                                ouputPixel[CHANNEL_A] = (byte)Math.Min(Math.Min(srcPixel[CHANNEL_A], guessedAlpha), 255);
                             }
                         }
 
 
                     });
 
-                }
 
             }
             finally
@@ -186,13 +197,13 @@ namespace LineExtractTest
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private unsafe Vector<int> ReadPixelDataToVector(byte* data)
+        private unsafe Vector<int> ReadPixelDataToVector(Span<byte> data)
         {
             return new Vector<int>(new int[] { data[0], data[1], data[2], data[3] });
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private unsafe void ReadNeighborsToVectorArray(byte* srcPtr, int x, int y, int w, int h, int stride, int channelCount, ref Vector<int>[] neighbors)
+        private void ReadNeighborsToVectorArray(Span<byte> input, int x, int y, int w, int h, int stride, int channelCount, ref Vector<int>[] neighbors)
         {
             for (int i = 0; i < 3; i++)
             {
@@ -206,8 +217,7 @@ namespace LineExtractTest
                     if (ny < 0) { ny = 0; }
                     if (ny >=h) { ny = h-1; }
 
-                    neighbors[i * 3 + j] =ReadPixelDataToVector( srcPtr - stride*y-x+stride*ny+x)
-                        ;
+                    neighbors[i * 3 + j] =ReadPixelDataToVector( input.Slice(((ny) * w + (nx))*channelCount, channelCount));
 
 
                 }
@@ -215,7 +225,7 @@ namespace LineExtractTest
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private unsafe void ReadNeighborsToArray(ref int[] data, int index, int x, int y, int w, int h, ref int[] neighbors)
+        private void ReadNeighborsToArray(ref int[] data, int index, int x, int y, int w, int h, ref int[] neighbors)
         {
 
             for(int i=0; i < 3; i++)
